@@ -11,6 +11,16 @@ spring:
     url: jdbc:mysql://localhost:3306/c_picture
     username: root
     password: 123456
+  profiles:
+    active: local
+  # 开放更大的文件上传体积
+  servlet:
+    multipart:
+      max-file-size: 10MB
+  # 配置 DevTools 的排除文件
+  devtools:
+    restart:
+      exclude: static/**,templates/**
 mybatis-plus:
   configuration:
     # MyBatis 配置

@@ -160,7 +160,7 @@ public class UserController {
      * @param request 请求
      * @return 成功
      */
-    @GetMapping("/logout")
+    @PostMapping("/logout")
     public BaseResponse<Boolean> logout(HttpServletRequest request) {
         boolean result = userService.userLogout(request);
         return ResultUtils.success(result);
@@ -172,7 +172,7 @@ public class UserController {
      * @param request 请求
      * @return 脱敏的用户信息
      */
-    @GetMapping("/getLoginUser")
+    @GetMapping("/get/login")
     public BaseResponse<UserVO> getLoginUser(HttpServletRequest request) {
         User loginUser = userService.getLoginUser(request);
         return ResultUtils.success(userService.getSafeUser(loginUser));

@@ -9,6 +9,7 @@ import com.cyb.mypicturebackend.common.ResultUtils;
 import com.cyb.mypicturebackend.config.CosClientConfig;
 import com.cyb.mypicturebackend.exception.BusinessException;
 import com.cyb.mypicturebackend.exception.ErrorCode;
+import com.cyb.mypicturebackend.exception.ThrowUtils;
 import com.cyb.mypicturebackend.model.dto.file.UploadPictureResult;
 import com.qcloud.cos.COSClient;
 import com.qcloud.cos.model.ObjectMetadata;
@@ -46,78 +47,83 @@ public class FileManager {
      * 上传图片
      *
      * @param multipartFile    文件
-     * @param uploadPathPrefix 上传路径前缀（eg: /public/userId）
+     * @param uploadPathPrefix 上传路径前缀
      * @return
      */
     public UploadPictureResult uploadPicture(MultipartFile multipartFile, String uploadPathPrefix) {
         // 校验图片
-        validatePicture(multipartFile);
-        // 自定义文件路径 uuid_时间戳.后缀
+        validPicture(multipartFile);
+        // 图片上传地址
         String uuid = RandomUtil.randomString(16);
         String originalFilename = multipartFile.getOriginalFilename();
-        // 为什么不将用户自定义的文件名添加到文件名中，主要是因为，这个文件名会被拼接到url中，被访问
-        // 如果用户加了特殊符号，可能会存在解析错误的情况，导致用户无法访问该图片，还有就是出于安全考量了
-        String uploadFileName = String.format("%s_%s.%s", DateUtil.formatDate(new Date()), uuid,
+        // 自己拼接文件上传路径，而不是使用原始文件名称，可以增强安全性
+        String uploadFilename = String.format("%s_%s.%s", DateUtil.formatDate(new Date()), uuid,
                 FileUtil.getSuffix(originalFilename));
-        String uploadPath = String.format("/%s/%s", uploadPathPrefix, uploadFileName);
-        // 创建临时文件multipartFile传入到本地，便于后续的操作
+        String uploadPath = String.format("/%s/%s", uploadPathPrefix, uploadFilename);
         File file = null;
         try {
-            // 创建一个临时文件用于接受传来的资源
-            file = File.createTempFile(uploadFileName, null);
+            // 上传文件
+            file = File.createTempFile(uploadPath, null);
             multipartFile.transferTo(file);
-            // 图片上传到cos
             PutObjectResult putObjectResult = cosManager.putPictureObject(uploadPath, file);
-            // 获取图片基础信息
+            // 获取图片信息对象
             ImageInfo imageInfo = putObjectResult.getCiUploadResult().getOriginalInfo().getImageInfo();
-            String format = imageInfo.getFormat();
+            // 计算宽高
             int picWidth = imageInfo.getWidth();
             int picHeight = imageInfo.getHeight();
             double picScale = NumberUtil.round(picWidth * 1.0 / picHeight, 2).doubleValue();
-            // 将图片信息返回
+            // 封装返回结果
             UploadPictureResult uploadPictureResult = new UploadPictureResult();
             uploadPictureResult.setUrl(cosClientConfig.getHost() + "/" + uploadPath);
-            uploadPictureResult.setPicName(FileUtil.mainName(file));
+            uploadPictureResult.setPicName(FileUtil.mainName(originalFilename));
             uploadPictureResult.setPicSize(FileUtil.size(file));
             uploadPictureResult.setPicWidth(picWidth);
             uploadPictureResult.setPicHeight(picHeight);
             uploadPictureResult.setPicScale(picScale);
-            uploadPictureResult.setPicFormat(format);
+            uploadPictureResult.setPicFormat(imageInfo.getFormat());
+            // 返回可访问的地址
             return uploadPictureResult;
-        } catch (IOException e) {
-            log.error("upload file failed, failPath: {}", uploadFileName, e);
+        } catch (Exception e) {
+            log.error("图片上传到对象存储失败", e);
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "上传失败");
         } finally {
-            // 关闭文件
-            deleteFile(file);
+            // 临时文件清理
+            this.deleteTempFile(file);
         }
+
     }
 
-
-    private void validatePicture(MultipartFile multipartFile) {
-        if (multipartFile == null) {
-            throw new BusinessException(ErrorCode.PARAMS_ERROR, "文件为空");
-        }
-        // 校验图片大小
-        final long ONE_MB = 1024 * 1024;
-        if (multipartFile.getSize() > 2 * ONE_MB) {
-            throw new BusinessException(ErrorCode.PARAMS_ERROR, "文件大小不能超过2MB");
-        }
-        // 校验图片后缀
-        final List<String> ALLOW_FILE_SUFFIX = Arrays.asList("jpeg", "jpg", "png", "webp");
-        if (!ALLOW_FILE_SUFFIX.contains(FileUtil.getSuffix(multipartFile.getOriginalFilename()))) {
-            throw new BusinessException(ErrorCode.PARAMS_ERROR, "不支持的文件类型");
-        }
+    /**
+     * 校验文件
+     *
+     * @param multipartFile
+     */
+    private void validPicture(MultipartFile multipartFile) {
+        ThrowUtils.throwIf(multipartFile == null, ErrorCode.PARAMS_ERROR, "文件不能为空");
+        // 1. 校验文件大小
+        long fileSize = multipartFile.getSize();
+        final long ONE_M = 1024 * 1024;
+        ThrowUtils.throwIf(fileSize > 2 * ONE_M, ErrorCode.PARAMS_ERROR, "文件大小不能超过 2MB");
+        // 2. 校验文件后缀
+        String fileSuffix = FileUtil.getSuffix(multipartFile.getOriginalFilename());
+        // 允许上传的文件后缀列表（或者集合）
+        final List<String> ALLOW_FORMAT_LIST = Arrays.asList("jpeg", "png", "jpg", "webp");
+        ThrowUtils.throwIf(!ALLOW_FORMAT_LIST.contains(fileSuffix), ErrorCode.PARAMS_ERROR, "文件类型错误");
     }
 
-    public void deleteFile(File file) {
+    /**
+     * 清理临时文件
+     *
+     * @param file
+     */
+    public void deleteTempFile(File file) {
         if (file == null) {
             return;
         }
-        // 关闭文件
-        boolean result = file.delete();
-        if (!result) {
-            log.error("file delete failed, filePath: {}", file.getAbsoluteFile());
+        // 删除临时文件
+        boolean deleteResult = file.delete();
+        if (!deleteResult) {
+            log.error("file delete error, filepath = {}", file.getAbsolutePath());
         }
     }
 

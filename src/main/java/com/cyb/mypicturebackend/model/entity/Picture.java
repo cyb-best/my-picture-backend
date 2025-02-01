@@ -1,25 +1,28 @@
-package com.cyb.mypicturebackend.model.dto.picture;
+package com.cyb.mypicturebackend.model.entity;
 
-
-import com.cyb.mypicturebackend.common.PageRequest;
-import lombok.Data;
-import lombok.EqualsAndHashCode;
+import com.baomidou.mybatisplus.annotation.*;
 
 import java.io.Serializable;
 import java.util.Date;
-import java.util.List;
+import lombok.Data;
 
 /**
- * 图片查询请求
+ * 图片
+ * @TableName picture
  */
-@EqualsAndHashCode(callSuper = true)
+@TableName(value ="picture")
 @Data
-public class PictureQueryRequest extends PageRequest implements Serializable {
-
+public class Picture implements Serializable {
     /**
      * id
      */
+    @TableId(type = IdType.ASSIGN_ID)
     private Long id;
+
+    /**
+     * 图片 url
+     */
+    private String url;
 
     /**
      * 图片名称
@@ -37,12 +40,12 @@ public class PictureQueryRequest extends PageRequest implements Serializable {
     private String category;
 
     /**
-     * 标签
+     * 标签（JSON 数组）
      */
-    private List<String> tags;
+    private String tags;
 
     /**
-     * 文件体积
+     * 图片体积
      */
     private Long picSize;
 
@@ -57,7 +60,7 @@ public class PictureQueryRequest extends PageRequest implements Serializable {
     private Integer picHeight;
 
     /**
-     * 图片比例
+     * 图片宽高比例
      */
     private Double picScale;
 
@@ -67,14 +70,10 @@ public class PictureQueryRequest extends PageRequest implements Serializable {
     private String picFormat;
 
     /**
-     * 搜索词（同时搜名称、简介等）
-     */
-    private String searchText;
-
-    /**
-     * 用户 id
+     * 创建用户 id
      */
     private Long userId;
+
     /**
      * 审核状态：0-待审核; 1-通过; 2-拒绝
      */
@@ -95,5 +94,27 @@ public class PictureQueryRequest extends PageRequest implements Serializable {
      */
     private Date reviewTime;
 
+    /**
+     * 创建时间
+     */
+    private Date createTime;
+
+    /**
+     * 编辑时间
+     */
+    private Date editTime;
+
+    /**
+     * 更新时间
+     */
+    private Date updateTime;
+
+    /**
+     * 是否删除
+     */
+    @TableLogic
+    private Integer isDelete;
+
+    @TableField(exist = false)
     private static final long serialVersionUID = 1L;
 }

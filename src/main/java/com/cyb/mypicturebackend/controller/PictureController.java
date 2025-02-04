@@ -1,5 +1,6 @@
 package com.cyb.mypicturebackend.controller;
 
+import cn.hutool.core.util.RandomUtil;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.cyb.mypicturebackend.auth.AuthCheck;
@@ -18,7 +19,13 @@ import com.cyb.mypicturebackend.model.vo.PictureTagCategory;
 import com.cyb.mypicturebackend.model.vo.PictureVO;
 import com.cyb.mypicturebackend.service.PictureService;
 import com.cyb.mypicturebackend.service.UserService;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import org.aspectj.lang.annotation.DeclareAnnotation;
 import org.springframework.beans.BeanUtils;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.util.DigestUtils;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -27,6 +34,7 @@ import javax.servlet.http.HttpServletRequest;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 图片接口
@@ -43,6 +51,15 @@ public class PictureController {
 
     @Resource
     private UserService userService;
+
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
+    // 创建一个缓存实例
+    private final Cache<String, String> cache = Caffeine.newBuilder()
+            .maximumSize(100) // 设置缓存的最大容量 100个键值对
+            .expireAfterWrite(10L, TimeUnit.MINUTES) // 写入后10分钟过期
+            .build();
 
 
     /**
@@ -185,6 +202,141 @@ public class PictureController {
                 pictureService.getQueryWrapper(pictureQueryRequest));
         // 获取封装类
         return ResultUtils.success(pictureService.getPictureVOPage(picturePage, request));
+    }
+
+    /**
+     * 基于Redis实现查询缓存优化
+     *
+     * @param pictureQueryRequest
+     * @param request
+     * @return
+     */
+    @Deprecated
+    @PostMapping("/list/page/vo/cache/redis")
+    public BaseResponse<Page<PictureVO>> listPictureVOByPageByRedis(@RequestBody PictureQueryRequest pictureQueryRequest,
+                                                                    HttpServletRequest request) {
+        long current = pictureQueryRequest.getCurrent();
+        long size = pictureQueryRequest.getPageSize();
+        // 限制爬虫
+        ThrowUtils.throwIf(size > 20, ErrorCode.PARAMS_ERROR);
+        // 普通用户默认只能看到审核通过的数据
+        pictureQueryRequest.setReviewStatus(PictureReviewStatusEnum.PASS.getValue());
+        // 1. 构造key(查询条件以json的形式拼接)
+        String queryStr = JSONUtil.toJsonStr(pictureQueryRequest);
+        String hashKey = DigestUtils.md5DigestAsHex(queryStr.getBytes());
+        String cacheKey = String.format("cpicture:listPictureVOByPage:%s", hashKey);
+        // 2. 缓存命中直接返回
+        ValueOperations<String, String> opsForValue = stringRedisTemplate.opsForValue();
+        String pageJson = opsForValue.get(cacheKey);
+        if (pageJson != null) {
+            Page<PictureVO> cachePage = JSONUtil.toBean(pageJson, Page.class);
+            return ResultUtils.success(cachePage);
+        }
+        // 3. 查询数据库
+        Page<Picture> picturePage = pictureService.page(new Page<>(current, size),
+                pictureService.getQueryWrapper(pictureQueryRequest));
+        // 获取封装类
+        Page<PictureVO> pictureVOPage = pictureService.getPictureVOPage(picturePage, request);
+        // 4. 将查询结果添加到缓存中,设置缓存失效时间 5-10分钟
+        pageJson = JSONUtil.toJsonStr(pictureVOPage);
+        // 设置5-10分钟失效，避免缓存雪崩的出现
+        int timeout = 300 + RandomUtil.randomInt(0, 300);
+        opsForValue.set(cacheKey, pageJson, timeout, TimeUnit.SECONDS);
+        // 5. 返回
+        // 获取封装类
+        return ResultUtils.success(pictureVOPage);
+    }
+
+    /**
+     * 基于caffeine实现本地查询缓存优化
+     *
+     * @param pictureQueryRequest
+     * @param request
+     * @return
+     */
+    @Deprecated
+    @PostMapping("/list/page/vo/cache/caffeine")
+    public BaseResponse<Page<PictureVO>> listPictureVOByPageByCaffeine(@RequestBody PictureQueryRequest pictureQueryRequest,
+                                                                    HttpServletRequest request) {
+        long current = pictureQueryRequest.getCurrent();
+        long size = pictureQueryRequest.getPageSize();
+        // 限制爬虫
+        ThrowUtils.throwIf(size > 20, ErrorCode.PARAMS_ERROR);
+        // 普通用户默认只能看到审核通过的数据
+        pictureQueryRequest.setReviewStatus(PictureReviewStatusEnum.PASS.getValue());
+        // 1. 构造key(查询条件以json的形式拼接)
+        String queryStr = JSONUtil.toJsonStr(pictureQueryRequest);
+        String hashKey = DigestUtils.md5DigestAsHex(queryStr.getBytes());
+        String cacheKey = String.format("cpicture:listPictureVOByPage:%s", hashKey);
+        // 2. 缓存命中直接返回
+        String pageJson = cache.getIfPresent(cacheKey);
+        if (pageJson != null) {
+            Page<PictureVO> cachePage = JSONUtil.toBean(pageJson, Page.class);
+            return ResultUtils.success(cachePage);
+        }
+        // 3. 查询数据库
+        Page<Picture> picturePage = pictureService.page(new Page<>(current, size),
+                pictureService.getQueryWrapper(pictureQueryRequest));
+        // 获取封装类
+        Page<PictureVO> pictureVOPage = pictureService.getPictureVOPage(picturePage, request);
+        // 4. 将查询结果添加到缓存中,设置缓存失效时间 5-10分钟
+        pageJson = JSONUtil.toJsonStr(pictureVOPage);
+        cache.put(cacheKey,pageJson);
+        // 5. 返回
+        // 获取封装类
+        return ResultUtils.success(pictureVOPage);
+    }
+
+    /**
+     * 多级缓存 caffeine + Redis
+     *
+     * @param pictureQueryRequest
+     * @param request
+     * @return
+     */
+    @PostMapping("/list/page/vo/multiCache")
+    public BaseResponse<Page<PictureVO>> listPictureVOByPageMultiCache(@RequestBody PictureQueryRequest pictureQueryRequest,
+                                                                       HttpServletRequest request) {
+        long current = pictureQueryRequest.getCurrent();
+        long size = pictureQueryRequest.getPageSize();
+        // 限制爬虫
+        ThrowUtils.throwIf(size > 20, ErrorCode.PARAMS_ERROR);
+        // 普通用户默认只能看到审核通过的数据
+        pictureQueryRequest.setReviewStatus(PictureReviewStatusEnum.PASS.getValue());
+        // 1. 构造key(查询条件以json的形式拼接)
+        String queryStr = JSONUtil.toJsonStr(pictureQueryRequest);
+        String hashKey = DigestUtils.md5DigestAsHex(queryStr.getBytes());
+        String cacheKey = String.format("cpicture:listPictureVOByPage:%s", hashKey);
+        // 2. 缓存命中直接返回
+        // 查本地缓存，命中返回
+        String pageJson = cache.getIfPresent(cacheKey);
+        if (pageJson != null) {
+            Page<PictureVO> cachePage = JSONUtil.toBean(pageJson, Page.class);
+            return ResultUtils.success(cachePage);
+        }
+        // 查Redis缓存，命中返回
+        ValueOperations<String, String> opsForValue = stringRedisTemplate.opsForValue();
+        pageJson = opsForValue.get(cacheKey);
+        if (pageJson != null) {
+            // 返回前应该将数据写到本地缓存中
+            cache.put(cacheKey,pageJson);
+            Page<PictureVO> cachePage = JSONUtil.toBean(pageJson, Page.class);
+            return ResultUtils.success(cachePage);
+        }
+        // 3. 都未命中则查询数据库
+        Page<Picture> picturePage = pictureService.page(new Page<>(current, size),
+                pictureService.getQueryWrapper(pictureQueryRequest));
+        // 获取封装类
+        Page<PictureVO> pictureVOPage = pictureService.getPictureVOPage(picturePage, request);
+        // 4. 将查询结果添加到缓存中,设置缓存失效时间 5-10分钟
+        pageJson = JSONUtil.toJsonStr(pictureVOPage);
+        // 设置5-10分钟失效，避免缓存雪崩的出现
+        int timeout = 300 + RandomUtil.randomInt(0, 300);
+        // 返回前将数据分别放入本地缓存，和redis中
+        cache.put(cacheKey,pageJson);
+        opsForValue.set(cacheKey, pageJson, timeout, TimeUnit.SECONDS);
+        // 5. 返回
+        return ResultUtils.success(pictureVOPage);
     }
 
     /**

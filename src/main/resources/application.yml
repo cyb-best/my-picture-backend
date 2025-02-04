@@ -2,6 +2,9 @@ server:
   port: 8123
   servlet:
     context-path: /api
+    session:
+      cookie:
+        max-age: 2592000
 spring:
   application:
     name: my-picture-backend
@@ -11,6 +14,7 @@ spring:
     url: jdbc:mysql://localhost:3306/c_picture
     username: root
     password: 123456
+  # 激活本地配置
   profiles:
     active: local
   # 开放更大的文件上传体积
@@ -21,6 +25,16 @@ spring:
   devtools:
     restart:
       exclude: static/**,templates/**
+  # Redis配置
+  redis:
+    database: 1
+    host: localhost
+    port: 6379
+    timeout: 5000
+  session:
+    store-type: redis
+    # session 30天过期
+    timeout: 2592000
 mybatis-plus:
   configuration:
     # MyBatis 配置

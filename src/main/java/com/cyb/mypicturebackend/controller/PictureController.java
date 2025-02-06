@@ -13,11 +13,13 @@ import com.cyb.mypicturebackend.exception.ErrorCode;
 import com.cyb.mypicturebackend.exception.ThrowUtils;
 import com.cyb.mypicturebackend.model.dto.picture.*;
 import com.cyb.mypicturebackend.model.entity.Picture;
+import com.cyb.mypicturebackend.model.entity.Space;
 import com.cyb.mypicturebackend.model.entity.User;
 import com.cyb.mypicturebackend.model.enums.PictureReviewStatusEnum;
 import com.cyb.mypicturebackend.model.vo.PictureTagCategory;
 import com.cyb.mypicturebackend.model.vo.PictureVO;
 import com.cyb.mypicturebackend.service.PictureService;
+import com.cyb.mypicturebackend.service.SpaceService;
 import com.cyb.mypicturebackend.service.UserService;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
@@ -54,6 +56,9 @@ public class PictureController {
 
     @Resource
     private StringRedisTemplate stringRedisTemplate;
+
+    @Resource
+    private SpaceService spaceService;
 
     // 创建一个缓存实例
     private final Cache<String, String> cache = Caffeine.newBuilder()
@@ -100,17 +105,7 @@ public class PictureController {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
         }
         User loginUser = userService.getLoginUser(request);
-        long id = deleteRequest.getId();
-        // 判断是否存在
-        Picture oldPicture = pictureService.getById(id);
-        ThrowUtils.throwIf(oldPicture == null, ErrorCode.NOT_FOUND_ERROR);
-        // 仅本人或管理员可删除
-        if (!oldPicture.getUserId().equals(loginUser.getId()) && !userService.isAdmin(loginUser)) {
-            throw new BusinessException(ErrorCode.NO_AUTH_ERROR);
-        }
-        // 操作数据库
-        boolean result = pictureService.removeById(id);
-        ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
+        pictureService.deletePicture(deleteRequest.getId(), loginUser);
         return ResultUtils.success(true);
     }
 
@@ -135,8 +130,10 @@ public class PictureController {
         long id = pictureUpdateRequest.getId();
         Picture oldPicture = pictureService.getById(id);
         ThrowUtils.throwIf(oldPicture == null, ErrorCode.NOT_FOUND_ERROR);
-        // 补充审核参数
         User loginUser = userService.getLoginUser(request);
+        // 权限校验
+        pictureService.checkPictureAuth(loginUser,oldPicture);
+        // 补充审核参数
         pictureService.fillReviewParams(oldPicture, loginUser);
         // 操作数据库
         boolean result = pictureService.updateById(picture);
@@ -154,6 +151,12 @@ public class PictureController {
         // 查询数据库
         Picture picture = pictureService.getById(id);
         ThrowUtils.throwIf(picture == null, ErrorCode.NOT_FOUND_ERROR);
+        // 管理员不能看私有空间的图片
+        Long spaceId = picture.getSpaceId();
+        if (spaceId != null) {
+            User loginUser = userService.getLoginUser(request);
+            pictureService.checkPictureAuth(loginUser, picture);
+        }
         // 获取封装类
         return ResultUtils.success(picture);
     }
@@ -166,6 +169,11 @@ public class PictureController {
         ThrowUtils.throwIf(id <= 0, ErrorCode.PARAMS_ERROR);
         // 查询数据库
         Picture picture = pictureService.getById(id);
+        Long spaceId = picture.getSpaceId();
+        if (spaceId != null) {
+            User loginUser = userService.getLoginUser(request);
+            pictureService.checkPictureAuth(loginUser, picture);
+        }
         ThrowUtils.throwIf(picture == null, ErrorCode.NOT_FOUND_ERROR);
         // 获取封装类
         return ResultUtils.success(pictureService.getPictureVO(picture, request));
@@ -197,6 +205,23 @@ public class PictureController {
         ThrowUtils.throwIf(size > 20, ErrorCode.PARAMS_ERROR);
         // 普通用户默认只能看到审核通过的数据
         pictureQueryRequest.setReviewStatus(PictureReviewStatusEnum.PASS.getValue());
+        // 空间权限校验
+        Long spaceId = pictureQueryRequest.getSpaceId();
+        // 公开图库
+        if (spaceId == null) {
+            // 普通用户默认只能查看已过审的公开数据
+            pictureQueryRequest.setReviewStatus(PictureReviewStatusEnum.PASS.getValue());
+            pictureQueryRequest.setNullSpaceId(true);
+        } else {
+            // 私有空间
+            User loginUser = userService.getLoginUser(request);
+            Space space = spaceService.getById(spaceId);
+            ThrowUtils.throwIf(space == null, ErrorCode.NOT_FOUND_ERROR, "空间不存在");
+            if (!loginUser.getId().equals(space.getUserId())) {
+                throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "没有空间权限");
+            }
+        }
+
         // 查询数据库
         Page<Picture> picturePage = pictureService.page(new Page<>(current, size),
                 pictureService.getQueryWrapper(pictureQueryRequest));
